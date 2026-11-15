@@ -7,7 +7,8 @@ $search = trim((string)($_GET['q'] ?? ''));
 $statusFilter = (string)($_GET['status'] ?? 'all');
 if (!in_array($statusFilter, ['all', 'pending', 'in_progress', 'completed', 'overdue'], true)) $statusFilter = 'all';
 
-$sql = 'SELECT * FROM tasks WHERE 1 = 1';
+$overdueCondition = overdue_sql_condition('tasks');
+$sql = "SELECT tasks.*, CASE WHEN {$overdueCondition} THEN 1 ELSE 0 END AS is_overdue FROM tasks WHERE 1 = 1";
 $params = [];
 if ($search !== '') {
     $sql .= ' AND (title LIKE :search_title OR description LIKE :search_description)';
@@ -15,7 +16,7 @@ if ($search !== '') {
     $params['search_description'] = '%' . $search . '%';
 }
 if ($statusFilter === 'overdue') {
-    $sql .= ' AND status <> \'completed\' AND due_date IS NOT NULL AND due_date < CURDATE()';
+    $sql .= " AND {$overdueCondition}";
 } elseif ($statusFilter !== 'all') {
     $sql .= ' AND status = :status';
     $params['status'] = $statusFilter;
@@ -24,7 +25,21 @@ $sql .= " ORDER BY FIELD(priority, 'high', 'medium', 'low'), CASE WHEN due_date 
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $tasks = $stmt->fetchAll();
-$stats = $pdo->query("SELECT COUNT(*) AS total, SUM(status='pending') AS pending, SUM(status='in_progress') AS in_progress, SUM(status='completed') AS completed, SUM(status <> 'completed' AND due_date IS NOT NULL AND due_date < CURDATE()) AS overdue FROM tasks")->fetch();
+$statsSql = "SELECT COUNT(*) AS total,
+    SUM(status='pending') AS pending,
+    SUM(status='in_progress') AS in_progress,
+    SUM(status='completed') AS completed,
+    SUM(CASE WHEN {$overdueCondition} THEN 1 ELSE 0 END) AS overdue,
+    MAX(CASE
+        WHEN {$overdueCondition} AND priority='high' THEN 3
+        WHEN {$overdueCondition} AND priority='medium' THEN 2
+        WHEN {$overdueCondition} THEN 1
+        ELSE 0
+    END) AS overdue_severity
+    FROM tasks";
+$stats = $pdo->query($statsSql)->fetch();
+$severityLabels = [0 => 'بدون هشدار', 1 => 'پیگیری عادی', 2 => 'نیازمند توجه', 3 => 'نیازمند رسیدگی فوری'];
+$overdueSeverity = $severityLabels[(int)($stats['overdue_severity'] ?? 0)] ?? 'نیازمند بررسی';
 $percent = (int)(($stats['total'] ?? 0) > 0 ? round(($stats['completed'] / $stats['total']) * 100) : 0);
 
 $pageTitle = 'داشبورد';
@@ -46,9 +61,18 @@ require __DIR__ . '/includes/header.php';
 <article class="stat-card"><span class="stat-icon icon-total">▤</span><span class="stat-label">همه کارها</span><strong><?= (int)($stats['total'] ?? 0) ?></strong><small>مجموع وظایف</small></article>
 <article class="stat-card"><span class="stat-icon icon-pending">◷</span><span class="stat-label">در انتظار</span><strong><?= (int)($stats['pending'] ?? 0) ?></strong><small>آماده شروع</small></article>
 <article class="stat-card"><span class="stat-icon icon-progress">↗</span><span class="stat-label">در حال انجام</span><strong><?= (int)($stats['in_progress'] ?? 0) ?></strong><small>در مسیر پیشرفت</small></article>
-<article class="stat-card"><span class="stat-icon icon-overdue">!</span><span class="stat-label">عقب‌افتاده</span><strong><?= (int)($stats['overdue'] ?? 0) ?></strong><small>نیازمند پیگیری</small></article>
 <article class="stat-card"><span class="stat-icon icon-done">✓</span><span class="stat-label">تکمیل‌شده</span><strong><?= (int)($stats['completed'] ?? 0) ?></strong><small>یک قدم رو به جلو</small></article>
 </section>
+
+<a class="overdue-alert<?= (int)($stats['overdue'] ?? 0) > 0 ? ' overdue-alert-active' : ' overdue-alert-clear' ?>" href="index.php?status=overdue" aria-label="نمایش وظایف عقب‌افتاده">
+    <span class="overdue-alert-icon">!</span>
+    <span class="overdue-alert-copy">
+        <strong>هشدار وظایف عقب‌افتاده</strong>
+        <small><?= e($overdueSeverity) ?> · برای مشاهدهٔ فهرست کلیک کنید</small>
+    </span>
+    <span class="overdue-alert-count"><?= (int)($stats['overdue'] ?? 0) ?></span>
+    <span class="overdue-alert-arrow" aria-hidden="true">←</span>
+</a>
 
 <section class="tasks-section">
 <div class="section-heading"><div><span class="eyebrow">برنامه‌ریزی هوشمند</span><h2>فهرست کارها</h2></div><a class="button button-dark" href="create.php">＋ کار تازه</a></div>
@@ -62,7 +86,7 @@ require __DIR__ . '/includes/header.php';
 <?php else: ?>
 <div class="task-list">
 <?php foreach ($tasks as $task): ?>
-<?php $isOverdue = $task['status'] !== 'completed' && !empty($task['due_date']) && $task['due_date'] < date('Y-m-d'); ?>
+<?php $isOverdue = (bool)$task['is_overdue']; ?>
 <article class="task-card<?= $isOverdue ? ' task-overdue' : '' ?>"><div class="task-main"><span class="task-priority priority-<?= e($task['priority']) ?>"></span><div class="task-copy"><h3><?= e($task['title']) ?></h3><?php if ($task['description'] !== ''): ?><p><?= e($task['description']) ?></p><?php endif; ?><div class="task-meta"><span class="status status-<?= e($task['status']) ?>"><?= e(status_label($task['status'])) ?></span><span class="priority-label">اولویت <?= e(priority_label($task['priority'])) ?></span><?php if ($task['due_date']): ?><span class="due-date<?= $isOverdue ? ' due-date-overdue' : '' ?>"><?= $isOverdue ? '⚠' : '◷' ?> <?= e($task['due_date']) ?><?= $isOverdue ? ' · عقب‌افتاده' : '' ?></span><?php endif; ?></div></div></div>
 <div class="task-actions"><a class="action-link" href="edit.php?id=<?= (int)$task['id'] ?>">ویرایش</a><form method="post" action="delete.php" onsubmit="return confirm('از حذف این کار مطمئن هستی؟');"><input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$task['id'] ?>"><button class="action-link action-delete" type="submit">حذف</button></form></div></article>
 <?php endforeach; ?>
