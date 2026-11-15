@@ -69,3 +69,14 @@ function status_label(string $status): string {
 function priority_label(string $priority): string {
     return ['low' => 'کم', 'medium' => 'متوسط', 'high' => 'زیاد'][$priority] ?? 'متوسط';
 }
+
+/**
+ * Shared overdue rule: a task is overdue when it is not completed and its due date is before today.
+ * Keep SQL filtering, dashboard counts, severity, and task highlighting aligned through this predicate.
+ */
+function overdue_sql_condition(string $tableAlias = 'tasks'): string {
+    if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $tableAlias)) {
+        throw new InvalidArgumentException('Invalid SQL table alias.');
+    }
+    return "{$tableAlias}.status <> 'completed' AND {$tableAlias}.due_date IS NOT NULL AND {$tableAlias}.due_date < CURDATE()";
+}
