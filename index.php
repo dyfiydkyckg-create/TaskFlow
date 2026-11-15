@@ -5,7 +5,7 @@ require_once __DIR__ . '/config/database.php';
 
 $search = trim((string)($_GET['q'] ?? ''));
 $statusFilter = (string)($_GET['status'] ?? 'all');
-if (!in_array($statusFilter, ['all', 'pending', 'in_progress', 'completed'], true)) $statusFilter = 'all';
+if (!in_array($statusFilter, ['all', 'pending', 'in_progress', 'completed', 'overdue'], true)) $statusFilter = 'all';
 
 $sql = 'SELECT * FROM tasks WHERE 1 = 1';
 $params = [];
@@ -14,7 +14,9 @@ if ($search !== '') {
     $params['search_title'] = '%' . $search . '%';
     $params['search_description'] = '%' . $search . '%';
 }
-if ($statusFilter !== 'all') {
+if ($statusFilter === 'overdue') {
+    $sql .= ' AND status <> \'completed\' AND due_date IS NOT NULL AND due_date < CURDATE()';
+} elseif ($statusFilter !== 'all') {
     $sql .= ' AND status = :status';
     $params['status'] = $statusFilter;
 }
@@ -22,7 +24,7 @@ $sql .= " ORDER BY FIELD(priority, 'high', 'medium', 'low'), CASE WHEN due_date 
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $tasks = $stmt->fetchAll();
-$stats = $pdo->query("SELECT COUNT(*) AS total, SUM(status='pending') AS pending, SUM(status='in_progress') AS in_progress, SUM(status='completed') AS completed FROM tasks")->fetch();
+$stats = $pdo->query("SELECT COUNT(*) AS total, SUM(status='pending') AS pending, SUM(status='in_progress') AS in_progress, SUM(status='completed') AS completed, SUM(status <> 'completed' AND due_date IS NOT NULL AND due_date < CURDATE()) AS overdue FROM tasks")->fetch();
 $percent = (int)(($stats['total'] ?? 0) > 0 ? round(($stats['completed'] / $stats['total']) * 100) : 0);
 
 $pageTitle = 'داشبورد';
@@ -44,6 +46,7 @@ require __DIR__ . '/includes/header.php';
 <article class="stat-card"><span class="stat-icon icon-total">▤</span><span class="stat-label">همه کارها</span><strong><?= (int)($stats['total'] ?? 0) ?></strong><small>مجموع وظایف</small></article>
 <article class="stat-card"><span class="stat-icon icon-pending">◷</span><span class="stat-label">در انتظار</span><strong><?= (int)($stats['pending'] ?? 0) ?></strong><small>آماده شروع</small></article>
 <article class="stat-card"><span class="stat-icon icon-progress">↗</span><span class="stat-label">در حال انجام</span><strong><?= (int)($stats['in_progress'] ?? 0) ?></strong><small>در مسیر پیشرفت</small></article>
+<article class="stat-card"><span class="stat-icon icon-overdue">!</span><span class="stat-label">عقب‌افتاده</span><strong><?= (int)($stats['overdue'] ?? 0) ?></strong><small>نیازمند پیگیری</small></article>
 <article class="stat-card"><span class="stat-icon icon-done">✓</span><span class="stat-label">تکمیل‌شده</span><strong><?= (int)($stats['completed'] ?? 0) ?></strong><small>یک قدم رو به جلو</small></article>
 </section>
 
@@ -51,7 +54,7 @@ require __DIR__ . '/includes/header.php';
 <div class="section-heading"><div><span class="eyebrow">برنامه‌ریزی هوشمند</span><h2>فهرست کارها</h2></div><a class="button button-dark" href="create.php">＋ کار تازه</a></div>
 <form class="toolbar" method="get" action="index.php">
 <label class="search-box"><span>⌕</span><input type="search" name="q" value="<?= e($search) ?>" placeholder="جست‌وجو در کارها..."></label>
-<select name="status" aria-label="فیلتر وضعیت"><option value="all" <?= $statusFilter === 'all' ? 'selected' : '' ?>>همه وضعیت‌ها</option><option value="pending" <?= $statusFilter === 'pending' ? 'selected' : '' ?>>در انتظار</option><option value="in_progress" <?= $statusFilter === 'in_progress' ? 'selected' : '' ?>>در حال انجام</option><option value="completed" <?= $statusFilter === 'completed' ? 'selected' : '' ?>>تکمیل‌شده</option></select>
+<select name="status" aria-label="فیلتر وضعیت"><option value="all" <?= $statusFilter === 'all' ? 'selected' : '' ?>>همه وضعیت‌ها</option><option value="pending" <?= $statusFilter === 'pending' ? 'selected' : '' ?>>در انتظار</option><option value="in_progress" <?= $statusFilter === 'in_progress' ? 'selected' : '' ?>>در حال انجام</option><option value="completed" <?= $statusFilter === 'completed' ? 'selected' : '' ?>>تکمیل‌شده</option><option value="overdue" <?= $statusFilter === 'overdue' ? 'selected' : '' ?>>عقب‌افتاده</option></select>
 <button class="button button-filter" type="submit">اعمال فیلتر</button>
 </form>
 <?php if (!$tasks): ?>
@@ -59,7 +62,8 @@ require __DIR__ . '/includes/header.php';
 <?php else: ?>
 <div class="task-list">
 <?php foreach ($tasks as $task): ?>
-<article class="task-card"><div class="task-main"><span class="task-priority priority-<?= e($task['priority']) ?>"></span><div class="task-copy"><h3><?= e($task['title']) ?></h3><?php if ($task['description'] !== ''): ?><p><?= e($task['description']) ?></p><?php endif; ?><div class="task-meta"><span class="status status-<?= e($task['status']) ?>"><?= e(status_label($task['status'])) ?></span><span class="priority-label">اولویت <?= e(priority_label($task['priority'])) ?></span><?php if ($task['due_date']): ?><span class="due-date">◷ <?= e($task['due_date']) ?></span><?php endif; ?></div></div></div>
+<?php $isOverdue = $task['status'] !== 'completed' && !empty($task['due_date']) && $task['due_date'] < date('Y-m-d'); ?>
+<article class="task-card<?= $isOverdue ? ' task-overdue' : '' ?>"><div class="task-main"><span class="task-priority priority-<?= e($task['priority']) ?>"></span><div class="task-copy"><h3><?= e($task['title']) ?></h3><?php if ($task['description'] !== ''): ?><p><?= e($task['description']) ?></p><?php endif; ?><div class="task-meta"><span class="status status-<?= e($task['status']) ?>"><?= e(status_label($task['status'])) ?></span><span class="priority-label">اولویت <?= e(priority_label($task['priority'])) ?></span><?php if ($task['due_date']): ?><span class="due-date<?= $isOverdue ? ' due-date-overdue' : '' ?>"><?= $isOverdue ? '⚠' : '◷' ?> <?= e($task['due_date']) ?><?= $isOverdue ? ' · عقب‌افتاده' : '' ?></span><?php endif; ?></div></div></div>
 <div class="task-actions"><a class="action-link" href="edit.php?id=<?= (int)$task['id'] ?>">ویرایش</a><form method="post" action="delete.php" onsubmit="return confirm('از حذف این کار مطمئن هستی؟');"><input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$task['id'] ?>"><button class="action-link action-delete" type="submit">حذف</button></form></div></article>
 <?php endforeach; ?>
 </div>
